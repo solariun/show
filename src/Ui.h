@@ -79,7 +79,8 @@ std::string styleLabel(const Options& options);
 // File name without the directory.
 std::string baseName(const std::string& path);
 
-// s: next style, c: palette <-> truecolor, [ / ]: contrast -5% / +5%.
+// s: next style, c: palette <-> truecolor, [ / ]: contrast -5% / +5%,
+// { / }: brightness -5% / +5%.
 // Returns true when the key was one of them (the caller then repaints
 // everything).
 bool displayKey(int key, Options& options);

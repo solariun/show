@@ -16,8 +16,9 @@ styles:
 | `2` or `ascii` | plain ASCII | ` .:-=+*#%@` by brightness, no colors at all |
 | `3` or `ascii-color` | colored ASCII | the same characters in the picture's colors, no background |
 
-Add `-t` / `--truecolor` for 24-bit color, and `--contrast 10%` (or
-`--contrast -10%`) to adjust contrast.
+Add `-t` / `--truecolor` for 24-bit color, `--contrast 10%` (or `-10%`)
+to adjust contrast, and `--brightness 10%` (or `-10%`) to adjust
+brightness.
 
 ## Install
 
@@ -69,6 +70,7 @@ show devices                       # audio outputs and cameras
 | s | next style (full → ascii-color → ascii) |
 | c | 256 colors ↔ 24-bit |
 | [ / ] | contrast −5% / +5% |
+| { / } | brightness −5% / +5% |
 | i | information box |
 | l | loop on / off |
 | n / p | next / previous file |
@@ -78,7 +80,7 @@ show devices                       # audio outputs and cameras
 - `+` / `−` zoom in or out (the zoom shows real detail from the full
   picture).
 - Arrows move around, and `0` fits the picture back.
-- `s`, `c`, `[` / `]` and `i` work as in the player.
+- `s`, `c`, `[` / `]`, `{` / `}` and `i` work as in the player.
 - `n`, space or Enter go to the next file, `p` to the previous one, and `q`
   quits.
 - `--slideshow 5` moves to the next picture every 5 s.
@@ -87,6 +89,7 @@ show devices                       # audio outputs and cameras
 
 ```
 display:   -s 1|2|3|full|ascii|ascii-color   -t/--truecolor   --invert   --contrast P
+           --brightness P
 playback:  --no-audio  --mute  --volume 0-200  --loop  --start SEC  --shuffle
            --slideshow SEC  --audio-device audiotoolbox|pulse|alsa
 camera:    --camera-size WxH  --camera-fps N  --camera-format avfoundation|v4l2

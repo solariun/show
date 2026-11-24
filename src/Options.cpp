@@ -32,6 +32,7 @@ Options::Options()
       colorMode(gfx::ColorMode::Palette256),
       invert(false),
       contrast(0),
+      brightness(0),
       audio(true),
       muted(false),
       volume(1.0),
@@ -100,6 +101,10 @@ std::string Options::parse(int argc, char** argv) {
             if (!gfx::parsePercent(argv[++i], contrast)) {
                 return std::string("--contrast takes a percentage, e.g. 10% or -10%, not ") + argv[i];
             }
+        } else if (a == "--brightness" && hasValue) {
+            if (!gfx::parsePercent(argv[++i], brightness)) {
+                return std::string("--brightness takes a percentage, e.g. 10% or -10%, not ") + argv[i];
+            }
         } else if (a == "--no-audio") {
             audio = false;
         } else if (a == "--mute") {
@@ -166,6 +171,7 @@ std::string Options::usage() {
            "  -t, --truecolor       24-bit colors instead of the 256-color palette\n"
            "      --invert          ASCII styles on light terminal backgrounds\n"
            "      --contrast P      contrast change in percent, e.g. 10% or -10%\n"
+           "      --brightness P    brightness change in percent, e.g. 10% or -10%\n"
            "\n"
            "playback:\n"
            "      --no-audio        no sound\n"
@@ -189,10 +195,12 @@ std::string Options::usage() {
            "\n"
            "keys while playing:\n"
            "  space pause   left/right -/+5 s   up/down +/-30 s   0-9 jump to 0%..90%\n"
-           "  + / - volume   m mute   s style   c colors   [ / ] contrast   i info   l loop\n"
+           "  + / - volume   m mute   s style   c colors   [ / ] contrast   { / } brightness\n"
+           "  i info   l loop\n"
            "  n / p next / previous file   q or Esc quit\n"
            "keys while viewing pictures:\n"
-           "  + / - zoom   arrows move   0 fit   s style   c colors   [ / ] contrast   i info\n"
+           "  + / - zoom   arrows move   0 fit   s style   c colors   [ / ] contrast   { / } brightness\n"
+           "  i info\n"
            "  n / p (or space) next / previous   q or Esc quit\n";
 }
 

@@ -149,6 +149,7 @@ gfx::Options textOptions(const Options& options) {
     o.colorMode = options.colorMode;
     o.invert = options.invert;
     o.contrast = options.contrast;
+    o.brightness = options.brightness;
     o.columns = options.width > 0 ? options.width : 80;
     return o;
 }
@@ -325,10 +326,13 @@ int runConvert(const Options& options) {
                 }
                 picture = resized;
             }
-            if (options.contrast != 0) {
+            if (options.contrast != 0 || options.brightness != 0) {
                 for (int y = 0; y < picture.height(); ++y) {
                     gfx::Rgb* row = picture.row(y);
-                    for (int x = 0; x < picture.width(); ++x) row[x] = gfx::adjustContrast(row[x], options.contrast);
+                    for (int x = 0; x < picture.width(); ++x) {
+                        if (options.contrast != 0) row[x] = gfx::adjustContrast(row[x], options.contrast);
+                        if (options.brightness != 0) row[x] = gfx::adjustBrightness(row[x], options.brightness);
+                    }
                 }
             }
             std::string error;

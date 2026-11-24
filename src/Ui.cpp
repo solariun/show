@@ -51,6 +51,7 @@ gfx::Options pictureOptions(const Options& options, const Layout& layout, gfx::F
     o.colorMode = options.colorMode;
     o.invert = options.invert;
     o.contrast = options.contrast;
+    o.brightness = options.brightness;
     o.filter = filter;
     o.columns = layout.columns;
     o.rows = layout.rows;
@@ -103,6 +104,12 @@ std::string styleLabel(const Options& options) {
         std::snprintf(c, sizeof(c), " contrast %+d%%", static_cast<int>(options.contrast * 100 + (options.contrast > 0 ? 0.5 : -0.5)));
         s += c;
     }
+    if (options.brightness != 0) {
+        char b[24];
+        std::snprintf(b, sizeof(b), " brightness %+d%%",
+                      static_cast<int>(options.brightness * 100 + (options.brightness > 0 ? 0.5 : -0.5)));
+        s += b;
+    }
     return s;
 }
 
@@ -123,6 +130,13 @@ bool displayKey(int key, Options& options) {
         if (options.contrast < -1.0) options.contrast = -1.0;
         if (options.contrast > 2.0) options.contrast = 2.0;
         if (options.contrast > -0.001 && options.contrast < 0.001) options.contrast = 0;
+        return true;
+    }
+    if (key == '{' || key == '}') {  // brightness -5% / +5%, between -100% and +100%
+        options.brightness += key == '}' ? 0.05 : -0.05;
+        if (options.brightness < -1.0) options.brightness = -1.0;
+        if (options.brightness > 1.0) options.brightness = 1.0;
+        if (options.brightness > -0.001 && options.brightness < 0.001) options.brightness = 0;
         return true;
     }
     if (key == 'c') {
