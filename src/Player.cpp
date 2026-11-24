@@ -129,29 +129,36 @@ struct AudioChunk {
 
 // ------------------------------------------------------------------ Clock --
 
-// Playback time in seconds.  Audio-driven: time advances with the wall
-// clock from an "anchor" set when sound starts, but never beyond the end of
-// the sound already given to the device (so video waits during underruns).
+// Playback time in seconds.
+// * With sound: what the speakers play right now, from AudioOutput's model
+//   (end of the sound sent minus what is still queued in the device).  So
+//   the picture follows the sound you hear, including the device delay.
+// * Without sound: the wall clock since an anchor (the first frame shown).
 class Clock {
 public:
-    Clock() : audio_(false), anchored_(false), base_(0), written_(0), paused_(false), pausedAt_(0) {}
+    Clock() : audio_(false), anchored_(false), haveAudio_(false), base_(0), sentEnd_(0), paused_(false), pausedAt_(0) {}
 
     void reset(double t, bool audioDriven) {
         std::lock_guard<std::mutex> lock(mutex_);
         audio_ = audioDriven;
         anchored_ = false;
-        base_ = written_ = t;
+        haveAudio_ = false;
+        base_ = t;
         if (paused_) pausedAt_ = t;
     }
+    // Wall clock mode: time starts at t now.
     void anchor(double t) {
         std::lock_guard<std::mutex> lock(mutex_);
         anchored_ = true;
         base_ = t;
         wall_ = SteadyClock::now();
     }
-    void wrote(double end) {
+    // Sound mode: the audio thread reports after every packet.
+    void audioState(double sentEnd, SteadyClock::time_point drainsAt) {
         std::lock_guard<std::mutex> lock(mutex_);
-        written_ = end;
+        haveAudio_ = true;
+        sentEnd_ = sentEnd;
+        drainsAt_ = drainsAt;
     }
     // The sound ended (or failed): continue on the wall clock.
     void detachAudio() {
@@ -169,7 +176,7 @@ public:
     }
     bool anchored() {
         std::lock_guard<std::mutex> lock(mutex_);
-        return anchored_;
+        return audio_ ? haveAudio_ : anchored_;
     }
     bool audioDriven() {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -185,27 +192,30 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         if (!paused_) return;
         paused_ = false;
-        base_ = written_ = pausedAt_;
-        // Video-only: continue right away.  With sound: the next write
-        // anchors (the device restarts from an empty buffer).
-        anchored_ = !audio_;
+        base_ = pausedAt_;
         wall_ = SteadyClock::now();
+        anchored_ = true;
     }
 
 private:
     double getLocked() const {
         if (paused_) return pausedAt_;
+        if (audio_) {
+            if (!haveAudio_) return base_;
+            double queued = std::chrono::duration<double>(drainsAt_ - SteadyClock::now()).count();
+            double t = sentEnd_ - (queued > 0 ? queued : 0);
+            return t > base_ ? t : base_;  // after a seek, older sound may still be playing
+        }
         if (!anchored_) return base_;
-        double t = base_ + secondsSince(wall_);
-        if (audio_ && t > written_) t = written_;
-        return t;
+        return base_ + secondsSince(wall_);
     }
 
     std::mutex mutex_;
-    bool audio_, anchored_;
+    bool audio_, anchored_, haveAudio_;
     double base_;
     SteadyClock::time_point wall_;
-    double written_;
+    double sentEnd_;
+    SteadyClock::time_point drainsAt_;
     bool paused_;
     double pausedAt_;
 };
@@ -267,7 +277,7 @@ private:
 
 struct Shared {
     Shared() : stop(false), eof(false), paused(false), serial(0), targetWidth(0), targetHeight(0),
-               live(false), hasVideo(false), hasAudio(false), audioActive(false), volume(100), muted(false),
+               live(false), hasVideo(false), hasAudio(false), audioActive(false), volume(100), muted(false), underruns(0),
                seekRequested(false), seekTarget(0), lastAudioWrite(SteadyClock::now()) {}
 
     std::atomic<bool> stop;
@@ -280,6 +290,7 @@ struct Shared {
     std::atomic<bool> audioActive;  // the audio thread is playing sound
     std::atomic<int> volume;        // percent
     std::atomic<bool> muted;
+    std::atomic<long> underruns;    // sound gaps (clicks), see AudioOutput
 
     std::mutex mutex;               // protects the fields below
     bool seekRequested;
@@ -293,8 +304,9 @@ struct Shared {
     Clock clock;
     Visualizer visualizer;
 
-    static const size_t kVideoCapacity = 6;
-    static const size_t kAudioCapacity = 48;  // ~1 s of decoded sound
+    static const size_t kVideoCapacity = 8;
+    static const size_t kAudioCapacity = 64;  // ~1.4 s of decoded sound
+    static const size_t kAudioLowWater = 12;  // ~250 ms: below this, sound comes first
 
     // Push helpers: wait while the queue is full, unless the other queue is
     // empty (see the file header) or a seek / stop is pending.
@@ -307,7 +319,9 @@ struct Shared {
             }
             size_t own = forVideo ? video.size() : audio.size();
             size_t cap = forVideo ? kVideoCapacity : kAudioCapacity;
-            bool otherStarved = forVideo ? (hasAudio && audioActive && audio.size() == 0)
+            // The other queue running low means its consumer is about to wait:
+            // keep reading so it gets data (sound running dry = crackles).
+            bool otherStarved = forVideo ? (hasAudio && audioActive && audio.size() < kAudioLowWater)
                                          : (hasVideo && video.size() == 0);
             if (own < cap || otherStarved) return true;
             std::this_thread::sleep_for(std::chrono::milliseconds(4));
@@ -473,31 +487,49 @@ void audioLoop(Shared& s, const std::string& device) {
         s.clock.detachAudio();
         return;
     }
+    int serial = s.serial;
+    bool finished = false;
     while (!s.stop) {
         if (s.paused) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;
         }
         std::shared_ptr<AudioChunk> chunk = s.audio.pop(20);
-        if (!chunk || chunk->serial != s.serial) continue;
-        size_t frames = chunk->samples.size() / AudioResampler::kChannels;
-        double length = static_cast<double>(frames) / AudioResampler::kRate;
-        {
-            // (Re)start the clock at the first sound after a reset, and after
-            // an underrun (the device played silence meanwhile).
-            std::lock_guard<std::mutex> lock(s.mutex);
-            if (!s.clock.anchored() || secondsSince(s.lastAudioWrite) > 0.25) s.clock.anchor(chunk->pts);
+        if (!chunk) {
+            // End of the media: send the last partial packet (padded).
+            if (s.eof && !finished && s.audio.size() == 0) {
+                finished = true;
+                output.finish();
+                double end;
+                SteadyClock::time_point drainsAt;
+                output.state(end, drainsAt);
+                if (output.hasSent()) s.clock.audioState(end, drainsAt);
+            }
+            continue;
         }
+        if (chunk->serial != s.serial) continue;
+        if (chunk->serial != serial) {  // first sound after a seek
+            serial = chunk->serial;
+            output.discard();
+        }
+        finished = false;
+        size_t frames = chunk->samples.size() / AudioResampler::kChannels;
         s.visualizer.feed(chunk->samples);
         double volume = s.muted ? 0.0 : s.volume / 100.0;
-        if (!output.write(&chunk->samples[0], frames, volume)) {
+        if (!output.write(&chunk->samples[0], frames, volume, chunk->pts)) {
             std::lock_guard<std::mutex> lock(s.mutex);
             s.audioError = "sound stopped: " + output.error();
             s.audioActive = false;
             s.clock.detachAudio();
             return;
         }
-        s.clock.wrote(chunk->pts + length);
+        if (output.hasSent()) {
+            double end;
+            SteadyClock::time_point drainsAt;
+            output.state(end, drainsAt);
+            s.clock.audioState(end, drainsAt);
+        }
+        s.underruns = output.underruns();
         std::lock_guard<std::mutex> lock(s.mutex);
         s.lastAudioWrite = SteadyClock::now();
     }
@@ -678,9 +710,10 @@ Outcome Player::play(const std::string& path, int position, int count) {
         if (input->audioStream() >= 0) {
             AVStream* a = ic->streams[input->audioStream()];
             char text[160];
-            std::snprintf(text, sizeof(text), "audio: %s %d Hz %d ch -> %s", avcodec_get_name(a->codecpar->codec_id),
-                          a->codecpar->sample_rate, a->codecpar->ch_layout.nb_channels,
-                          s.hasAudio ? (s.audioActive ? "playing" : "off") : "disabled");
+            std::snprintf(text, sizeof(text), "audio: %s %d Hz %d ch -> %s, gaps %ld",
+                          avcodec_get_name(a->codecpar->codec_id), a->codecpar->sample_rate,
+                          a->codecpar->ch_layout.nb_channels,
+                          s.hasAudio ? (s.audioActive ? "playing" : "off") : "disabled", static_cast<long>(s.underruns));
             lines.push_back(text);
         }
         char grid[96];
@@ -856,7 +889,7 @@ Outcome Player::play(const std::string& path, int position, int count) {
             bool soundDone = !s.hasAudio || !s.audioActive;
             if (!soundDone) {
                 std::lock_guard<std::mutex> lock(s.mutex);
-                soundDone = secondsSince(s.lastAudioWrite) > 0.3;
+                soundDone = secondsSince(s.lastAudioWrite) > 0.5;  // the device still plays ~0.25 s
                 if (soundDone) s.clock.detachAudio();
             }
             if (soundDone) {

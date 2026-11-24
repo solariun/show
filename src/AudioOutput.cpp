@@ -13,8 +13,9 @@
 //
 //  How it fits in
 //  --------------
-//  Packets are at most 1024 sample frames (21 ms): small enough for prompt
-//  pause / seek reactions, large enough to keep overhead low.
+//  Packets are always kPacketFrames (4096 frames, 85 ms): see "Why
+//  fixed-size packets" in AudioOutput.h.  The pending samples carry their
+//  media time so the Player can tell what is being heard (playing()).
 //
 //  FFmpeg notes
 //  ------------
@@ -40,10 +41,11 @@ namespace show {
 
 namespace {
 const char* const kPreferred[] = {"audiotoolbox", "pulse", "alsa", "oss", "sndio"};
-const size_t kPacketFrames = 1024;
 }  // namespace
 
-AudioOutput::AudioOutput() : context_(0), pts_(0) {}
+AudioOutput::AudioOutput()
+    : context_(0), pts_(0), pendingPts_(0), sentEnd_(0), sent_(false), underruns_(0),
+      drainsAt_(std::chrono::steady_clock::now()) {}
 
 AudioOutput::~AudioOutput() { close(); }
 
@@ -99,6 +101,10 @@ bool AudioOutput::openDevice(const std::string& device) {
     }
     name_ = device;
     pts_ = 0;
+    pending_.clear();
+    sent_ = false;
+    underruns_ = 0;
+    drainsAt_ = std::chrono::steady_clock::now();
     error_.clear();
     return true;
 }
@@ -110,42 +116,97 @@ void AudioOutput::close() {
     context_ = 0;
 }
 
-bool AudioOutput::write(const std::int16_t* samples, size_t frames, double volume) {
+bool AudioOutput::write(const std::int16_t* samples, size_t frames, double volume, double pts) {
     if (!context_) return false;
-    const int channels = AudioResampler::kChannels;
-    while (frames > 0) {
-        size_t n = frames < kPacketFrames ? frames : kPacketFrames;
-        size_t values = n * channels;
-        scaled_.resize(values);
-        if (volume <= 0) {
-            std::memset(&scaled_[0], 0, values * sizeof(std::int16_t));
-        } else if (volume == 1.0) {
-            std::memcpy(&scaled_[0], samples, values * sizeof(std::int16_t));
-        } else {
-            for (size_t i = 0; i < values; ++i) {
-                double v = samples[i] * volume;
-                scaled_[i] = static_cast<std::int16_t>(v > 32767 ? 32767 : (v < -32768 ? -32768 : v));
-            }
+    const size_t channels = AudioResampler::kChannels;
+    if (pending_.empty()) pendingPts_ = pts;
+    size_t start = pending_.size();
+    pending_.resize(start + frames * channels);
+    std::int16_t* out = &pending_[start];
+    size_t values = frames * channels;
+    if (volume <= 0) {
+        std::memset(out, 0, values * sizeof(std::int16_t));
+    } else if (volume == 1.0) {
+        std::memcpy(out, samples, values * sizeof(std::int16_t));
+    } else {
+        for (size_t i = 0; i < values; ++i) {
+            double v = samples[i] * volume;
+            out[i] = static_cast<std::int16_t>(v > 32767 ? 32767 : (v < -32768 ? -32768 : v));
         }
-        AVPacket* packet = av_packet_alloc();
-        if (!packet || av_new_packet(packet, static_cast<int>(values * sizeof(std::int16_t))) < 0) {
-            av_packet_free(&packet);
-            return false;
-        }
-        std::memcpy(packet->data, &scaled_[0], values * sizeof(std::int16_t));
-        packet->pts = packet->dts = pts_;
-        packet->duration = static_cast<int64_t>(n);
-        pts_ += static_cast<int64_t>(n);
-        int rc = av_write_frame(context_, packet);
-        av_packet_free(&packet);
-        if (rc < 0) {
-            error_ = name_ + ": " + ffmpegError(rc);
-            return false;
-        }
-        samples += values;
-        frames -= n;
     }
+    // Send every complete packet; keep the rest for next time.
+    const size_t packetValues = kPacketFrames * channels;
+    size_t offset = 0;
+    while (pending_.size() - offset >= packetValues) {
+        if (!sendPacket(&pending_[offset])) return false;
+        offset += packetValues;
+        pendingPts_ += static_cast<double>(kPacketFrames) / AudioResampler::kRate;
+    }
+    pending_.erase(pending_.begin(), pending_.begin() + static_cast<long>(offset));
     return true;
+}
+
+bool AudioOutput::finish() {
+    if (!context_ || pending_.empty()) return true;
+    const size_t packetValues = kPacketFrames * AudioResampler::kChannels;
+    pending_.resize(packetValues, 0);  // pad with silence to a full packet
+    bool ok = sendPacket(&pending_[0]);
+    pending_.clear();
+    return ok;
+}
+
+void AudioOutput::discard() { pending_.clear(); }
+
+// Device model: every packet plays for kPacketFrames / rate seconds, one
+// after the other.  When write blocks, a buffer has just finished, so the
+// device now holds exactly two packets (the one starting and the new one):
+// the model is re-synchronized to that.
+bool AudioOutput::sendPacket(const std::int16_t* data) {
+    const size_t values = kPacketFrames * AudioResampler::kChannels;
+    const double packetSeconds = static_cast<double>(kPacketFrames) / AudioResampler::kRate;
+    AVPacket* packet = av_packet_alloc();
+    if (!packet || av_new_packet(packet, static_cast<int>(values * sizeof(std::int16_t))) < 0) {
+        av_packet_free(&packet);
+        return false;
+    }
+    std::memcpy(packet->data, data, values * sizeof(std::int16_t));
+    packet->pts = packet->dts = pts_;
+    packet->duration = static_cast<int64_t>(kPacketFrames);
+    pts_ += static_cast<int64_t>(kPacketFrames);
+
+    std::chrono::steady_clock::time_point before = std::chrono::steady_clock::now();
+    // The device had already played everything: there was a gap (a click).
+    if (sent_ && before > drainsAt_ + std::chrono::milliseconds(5)) ++underruns_;
+    int rc = av_write_frame(context_, packet);
+    av_packet_free(&packet);
+    if (rc < 0) {
+        error_ = name_ + ": " + ffmpegError(rc);
+        return false;
+    }
+    std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::duration packetTime =
+        std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(packetSeconds));
+    bool blocked = now - before > std::chrono::milliseconds(2);
+    if (blocked) {
+        drainsAt_ = now + packetTime * 2;
+    } else {
+        drainsAt_ = (drainsAt_ > now ? drainsAt_ : now) + packetTime;
+    }
+    sentEnd_ = pendingPts_ + packetSeconds;
+    sent_ = true;
+    return true;
+}
+
+bool AudioOutput::playing(double& pts) const {
+    if (!sent_) return false;
+    double queued = std::chrono::duration<double>(drainsAt_ - std::chrono::steady_clock::now()).count();
+    pts = sentEnd_ - (queued > 0 ? queued : 0);
+    return true;
+}
+
+void AudioOutput::state(double& sentEnd, std::chrono::steady_clock::time_point& drainsAt) const {
+    sentEnd = sentEnd_;
+    drainsAt = drainsAt_;
 }
 
 }  // namespace show
