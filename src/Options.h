@@ -51,7 +51,7 @@ struct Options {
     gfx::ColorMode colorMode;  // -t / --truecolor
     bool invert;               // --invert (ASCII on light backgrounds)
     double contrast;           // --contrast P%: 0.10 = +10%, -0.10 = -10% ([ and ] keys)
-    double brightness;         // --brightness P%: 0.10 = +10%, -0.10 = -10% ({ and } keys)
+    double brightness;         // --brightness P%: 0.10 = +10%, -0.10 = -10% (< and > keys)
 
     // Playback
     bool audio;                // --no-audio turns sound off entirely

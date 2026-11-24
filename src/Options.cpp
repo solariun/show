@@ -195,11 +195,11 @@ std::string Options::usage() {
            "\n"
            "keys while playing:\n"
            "  space pause   left/right -/+5 s   up/down +/-30 s   0-9 jump to 0%..90%\n"
-           "  + / - volume   m mute   s style   c colors   [ / ] contrast   { / } brightness\n"
+           "  + / - volume   m mute   s style   c colors   [ / ] contrast   < / > brightness\n"
            "  i info   l loop\n"
            "  n / p next / previous file   q or Esc quit\n"
            "keys while viewing pictures:\n"
-           "  + / - zoom   arrows move   0 fit   s style   c colors   [ / ] contrast   { / } brightness\n"
+           "  + / - zoom   arrows move   0 fit   s style   c colors   [ / ] contrast   < / > brightness\n"
            "  i info\n"
            "  n / p (or space) next / previous   q or Esc quit\n";
 }

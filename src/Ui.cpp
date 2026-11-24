@@ -132,8 +132,8 @@ bool displayKey(int key, Options& options) {
         if (options.contrast > -0.001 && options.contrast < 0.001) options.contrast = 0;
         return true;
     }
-    if (key == '{' || key == '}') {  // brightness -5% / +5%, between -100% and +100%
-        options.brightness += key == '}' ? 0.05 : -0.05;
+    if (key == '<' || key == '>') {  // brightness -5% / +5%, between -100% and +100%
+        options.brightness += key == '>' ? 0.05 : -0.05;
         if (options.brightness < -1.0) options.brightness = -1.0;
         if (options.brightness > 1.0) options.brightness = 1.0;
         if (options.brightness > -0.001 && options.brightness < 0.001) options.brightness = 0;
