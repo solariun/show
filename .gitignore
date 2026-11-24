@@ -1,0 +1,11 @@
+# Build output
+/build/
+/show
+
+# Media used for testing
+*.mp4
+*.mkv
+*.mp3
+*-movie.txt
+
+.DS_Store

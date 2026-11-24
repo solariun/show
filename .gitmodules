@@ -1,0 +1,3 @@
+[submodule "external/Graphicx"]
+	path = external/Graphicx
+	url = https://github.com/solariun/Graphicx.git
